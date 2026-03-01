@@ -11,8 +11,7 @@
         <provider
             android:name="ce.com.cenewbluesdk.BleContentProvider.YDBleContentProvider"
             android:authorities="${applicationId}"
-            android:exported="true"
-            android:protectionLevel="signature" />
+            android:exported="true" />
     </application>
 
 </manifest>

@@ -25,6 +25,7 @@ object LuckRingSdkHelper {
     private var context: Context? = null
     private var scanCallback: ((List<Map<String, Any?>>) -> Unit)? = null
     private val deviceList = ArrayList<Map<String, Any?>>()
+    private val deviceMap = mutableMapOf<String, MyBleDevice>()
 
     private val healthData = HealthDataCollector()
     private var getHealthDataResult: MethodChannel.Result? = null
@@ -41,7 +42,12 @@ object LuckRingSdkHelper {
             myBleDevice: MyBleDevice?
         ) {
             val list = devList?.mapNotNull { dev ->
-                dev?.let { toDeviceMap(it) }
+                dev?.let {
+                    val map = toDeviceMap(it)
+                    val addr = map["address"] as? String ?: ""
+                    if (addr.isNotEmpty()) deviceMap[addr] = it
+                    map
+                }
             } ?: emptyList()
             synchronized(deviceList) {
                 this@LuckRingSdkHelper.deviceList.clear()
@@ -51,11 +57,28 @@ object LuckRingSdkHelper {
         }
     }
 
-    private fun toDeviceMap(dev: MyBleDevice): Map<String, Any?> = mapOf(
-        "name" to (dev.name ?: "Unknown"),
-        "address" to (dev.address ?: ""),
-        "deviceId" to (dev.devId ?: dev.address)
-    )
+    private fun toDeviceMap(dev: MyBleDevice): Map<String, Any?> {
+        val btAddress = dev.getmBluetoothDevice()?.address
+        val macId = dev.macId
+        // Prefer macId: SDK extracts real MAC from scan record; btAddress may be masked on Android 12+
+        val address = when {
+            !macId.isNullOrBlank() && isValidMac(macId) -> macId
+            !btAddress.isNullOrBlank() && isValidMac(btAddress) -> btAddress
+            !macId.isNullOrBlank() -> macId
+            else -> btAddress ?: ""
+        }
+        return mapOf(
+            "name" to (dev.name ?: "Unknown"),
+            "address" to address,
+            "deviceId" to (macId ?: btAddress ?: "")
+        )
+    }
+
+    private fun isValidMac(addr: String): Boolean {
+        if (addr.length != 17) return false
+        if (addr == "02:00:00:00:00:00") return false
+        return addr.matches(Regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"))
+    }
 
     fun initialized(ctx: Context) {
         if (context == null) {
@@ -68,6 +91,7 @@ object LuckRingSdkHelper {
     fun startScan(timeoutMs: Int, onDevices: (List<Map<String, Any?>>) -> Unit) {
         context ?: return
         deviceList.clear()
+        deviceMap.clear()
         scanCallback = onDevices
         BluetoothHelper.getInstance().scanningDeviceInit(context!!, scanListener)
         BluetoothHelper.getInstance().setScanTimeOut(timeoutMs)
@@ -110,13 +134,37 @@ object LuckRingSdkHelper {
             }
         }
         rcv.addBleDataResultListener(connKey, listener)
-        BluetoothHelper.getInstance().connectDev(address)
+
+        val btDevice = deviceMap[address]?.getmBluetoothDevice()
+        val useBtDevice = btDevice != null && !isValidMac(address)
+        if (useBtDevice && !connectViaBluetoothDevice(btDevice)) {
+            BluetoothHelper.getInstance().connectDev(address, "")
+        } else if (!useBtDevice) {
+            BluetoothHelper.getInstance().connectDev(address, "")
+        }
+
         handler.postDelayed({
             if (!resolved) {
                 resolved = true
                 result.success(false)
             }
         }, 15000)
+    }
+
+    private fun connectViaBluetoothDevice(device: android.bluetooth.BluetoothDevice): Boolean {
+        return try {
+            val helper = BluetoothHelper.getInstance()
+            val util = helper.javaClass.getMethod("getConnectUtil").invoke(helper)
+            val method = util?.javaClass?.methods?.find {
+                it.name == "connectDevice" && it.parameterTypes.size == 1 &&
+                    it.parameterTypes[0] == android.bluetooth.BluetoothDevice::class.java
+            }
+            method?.invoke(util, device)
+            true
+        } catch (e: Exception) {
+            android.util.Log.w("LuckRing", "connectDevice(BluetoothDevice) failed", e)
+            false
+        }
     }
 
     fun disconnect() {
@@ -129,9 +177,8 @@ object LuckRingSdkHelper {
         healthData.clear()
         getHealthDataResult = result
         registerHealthListeners()
+        BluetoothHelper.getInstance().synDevData()
         val sendData = BluetoothHelper.getInstance().getSendBlueData()
-        sendData.synDevData()
-        // Request device to send health data (must open detection to receive)
         sendData.sendHeartRateSwitch(CEBC.OPENSTATUS.OPEN)
         sendData.sendBloodOxygenDetection(CEBC.OPENSTATUS.OPEN)
         sendData.sendBloodPressureDetection(CEBC.OPENSTATUS.OPEN)
@@ -184,7 +231,7 @@ object LuckRingSdkHelper {
         rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_DATA_TYPE_REAL_O2,
             K6BleDataResult { list: ArrayList<K6_DATA_TYPE_REAL_O2>? ->
                 list?.forEach { o2 ->
-                    healthData.addBloodOxygen(o2.o2 ?: 0, o2.time)
+                    healthData.addBloodOxygen(o2.value, o2.time.toLong())
                 }
                 false
             })
@@ -192,7 +239,7 @@ object LuckRingSdkHelper {
         rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_DATA_TYPE_REAL_BP,
             K6BleDataResult { list: ArrayList<K6_DATA_TYPE_REAL_BP>? ->
                 list?.forEach { bp ->
-                    healthData.addBloodPressure(bp.systolic ?: 0, bp.diastolic ?: 0, bp.time)
+                    healthData.addBloodPressure(bp.bp_sbp, bp.bp_dbp, bp.time.toLong())
                 }
                 false
             })
@@ -207,11 +254,11 @@ object LuckRingSdkHelper {
             K6BleDataResult { list: ArrayList<K6_Sport>? ->
                 list?.forEach { s ->
                     healthData.addSport(
-                        s.startSecs,
-                        s.walkSteps ?: 0,
-                        s.walkDistance ?: 0,
-                        s.walkCalories ?: 0,
-                        s.walkDuration ?: 0
+                        s.starTime.toLong(),
+                        s.walkSteps,
+                        s.distance,
+                        s.calories,
+                        s.duration
                     )
                 }
                 false
@@ -219,13 +266,13 @@ object LuckRingSdkHelper {
 
         rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_BATTERY,
             K6BleDataResult { info: K6_DATA_TYPE_BATTERY_INFO? ->
-                info?.let { healthData.setBattery(it.battery_capacity ?: 0) }
+                info?.let { healthData.setBattery(it.battery) }
                 false
             })
 
         rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_DEVINFO,
             K6BleDataResult { dev: K6_DevInfoStruct? ->
-                dev?.let { healthData.setDeviceInfo(it.macAddr, it.version, it.ID) }
+                dev?.let { healthData.setDeviceInfo(null, it.softwareVer, it.code_id.toString()) }
                 false
             })
     }

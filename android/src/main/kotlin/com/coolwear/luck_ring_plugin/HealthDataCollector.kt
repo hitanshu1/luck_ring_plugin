@@ -49,21 +49,11 @@ internal class HealthDataCollector {
 
     fun addSleep(data: K6_sleepData) {
         try {
-            val infos = data.sleepInfos
-            if (!infos.isNullOrEmpty()) {
-                for (info in infos) {
-                    val map = HashMap<String, Any?>()
-                    try {
-                        val time = info.javaClass.getMethod("getSleepStartTime")?.invoke(info)
-                        map["startTime"] = (time as? Number)?.longValue()?.let { formatTimestamp(it) }
-                    } catch (_: Exception) {}
-                    try {
-                        val stage = info.javaClass.getMethod("getSleepType")?.invoke(info) as? Number
-                        map["stage"] = stage?.intValue() ?: 0
-                    } catch (_: Exception) { map["stage"] = 0 }
-                    sleepList.add(map)
-                }
-            }
+            val map = HashMap<String, Any?>()
+            map["startTime"] = if (data.startTime > 0) formatTimestamp(data.startTime) else null
+            map["stage"] = 0
+            map["durationMinutes"] = data.sleepTime
+            sleepList.add(map)
         } catch (_: Exception) { }
     }
 
