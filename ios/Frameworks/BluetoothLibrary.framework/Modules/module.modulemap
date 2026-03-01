@@ -1,0 +1,6 @@
+framework module BluetoothLibrary {
+  umbrella header "BluetoothLibrary.h"
+  export *
+
+  module * { export * }
+}
