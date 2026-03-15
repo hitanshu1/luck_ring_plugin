@@ -1,4 +1,12 @@
+/// A Flutter plugin for interacting with Luck Ring / Coolwear smart rings.
+///
+/// This library provides classes and methods to scan for, connect to, and
+/// retrieve health data (heart rate, blood oxygen, blood pressure, etc.)
+/// from compatible wearable devices.
+library luck_ring_plugin;
+
 export 'src/models/health_data.dart';
+
 export 'src/models/scan_device.dart';
 
 import 'luck_ring_plugin_platform_interface.dart';
