@@ -1,7 +1,7 @@
 name: luck_ring_plugin
 description: "A Flutter plugin for interacting with Luck Ring wearable devices, providing Bluetooth connectivity and health data synchronization."
 repository: https://github.com/hitanshu1/luck_ring_plugin.git
-version: 0.0.1
+version: 0.0.2
 homepage:
 topics:
   - android
