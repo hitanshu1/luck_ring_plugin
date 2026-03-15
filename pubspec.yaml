@@ -1,7 +1,13 @@
 name: luck_ring_plugin
 description: "A new Flutter plugin project."
+repository: https://github.com/hitanshu1/luck_ring_plugin.git
 version: 0.0.1
 homepage:
+topics:
+  - android
+  - ios
+  - plugin
+
 
 environment:
   sdk: ^3.10.3
