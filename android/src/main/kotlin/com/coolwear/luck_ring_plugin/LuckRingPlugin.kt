@@ -98,8 +98,18 @@ class LuckRingPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 if (!LuckRingSdkHelper.isConnected()) {
                     result.success(mapOf("errorMessage" to "Device not connected"))
                 } else {
-                    LuckRingSdkHelper.getHealthData(result)
+                    val timeoutMs = call.argument<Int>("timeoutMs")?.toLong() ?: 60_000L
+                    LuckRingSdkHelper.getHealthData(timeoutMs, result)
                 }
+            }
+            "setUserInfo" -> {
+                LuckRingSdkHelper.setUserInfo(
+                    sex = call.argument<Int>("sex"),
+                    age = call.argument<Int>("age"),
+                    heightCm = call.argument<Int>("heightCm"),
+                    weightKg = call.argument<Int>("weightKg"),
+                )
+                result.success(null)
             }
             else -> result.notImplemented()
         }

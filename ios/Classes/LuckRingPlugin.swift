@@ -48,9 +48,20 @@ public class LuckRingPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         case "isConnected":
             result(LuckRingSdkBridge.shared.isConnected())
         case "getHealthData":
-            LuckRingSdkBridge.shared.getHealthData { data in
+            let args = call.arguments as? [String: Any]
+            let timeoutMs = (args?["timeoutMs"] as? Int) ?? 60000
+            LuckRingSdkBridge.shared.getHealthData(timeoutMs: timeoutMs) { data in
                 result(data)
             }
+        case "setUserInfo":
+            let args = call.arguments as? [String: Any]
+            LuckRingSdkBridge.shared.setUserInfo(
+                sex: args?["sex"] as? Int,
+                age: args?["age"] as? Int,
+                heightCm: args?["heightCm"] as? Int,
+                weightKg: args?["weightKg"] as? Int
+            )
+            result(nil)
         default:
             result(FlutterMethodNotImplemented)
         }

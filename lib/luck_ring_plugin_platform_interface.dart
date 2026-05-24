@@ -72,9 +72,38 @@ abstract class LuckRingPluginPlatform extends PlatformInterface {
     throw UnimplementedError('isConnected() has not been implemented.');
   }
 
-  /// Fetches all health data from the connected ring. Triggers sync and waits
-  /// for data (up to ~30s). Ensure device is connected before calling.
-  Future<HealthData> getHealthData() {
+  /// Fetches all health data from the connected ring.
+  ///
+  /// Triggers a sync and starts real-time measurements (heart rate, blood oxygen,
+  /// blood pressure) on the device, then waits up to [timeoutMs] milliseconds
+  /// for results before returning whatever data was collected.
+  ///
+  /// Blood pressure (BP) is significantly slower than heart rate / SpO2 — the
+  /// ring runs a single measurement cycle that typically takes 45–60 seconds
+  /// before it pushes the first BP reading. If you need BP readings, keep
+  /// [timeoutMs] at the default (60s) or higher and make sure the ring is
+  /// worn snugly and the wearer stays still while measuring.
+  ///
+  /// Ensure [connect] was called successfully before calling this method.
+  Future<HealthData> getHealthData({int timeoutMs = 60000}) {
     throw UnimplementedError('getHealthData() has not been implemented.');
+  }
+
+  /// Pushes the wearer's demographics to the ring.
+  ///
+  /// The K6 firmware uses sex / age / height / weight as inputs to its
+  /// PPG-based blood pressure calculation. On many builds the ring will
+  /// **silently refuse to start the BP measurement cycle** until user info
+  /// has been set, so call this once after [connect] (or any time the
+  /// profile changes) and before [getHealthData] if you need BP readings.
+  ///
+  /// - [sex]: 0 = male, 1 = female
+  /// - [age]: years (1–120)
+  /// - [heightCm]: centimetres (80–230)
+  /// - [weightKg]: kilograms, rounded (20–200)
+  ///
+  /// Any null value keeps the previously-stored default for that field.
+  Future<void> setUserInfo({int? sex, int? age, int? heightCm, int? weightKg}) {
+    throw UnimplementedError('setUserInfo() has not been implemented.');
   }
 }

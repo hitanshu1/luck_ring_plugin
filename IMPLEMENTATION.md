@@ -83,14 +83,26 @@ if (connected) {
 ### Get health data
 
 ```dart
+// Default 60s window — enough time for a blood pressure reading.
 final healthData = await plugin.getHealthData();
+
+// Or pass a custom timeout, e.g. when you only need HR / SpO2:
+final quick = await plugin.getHealthData(timeoutMs: 20000);
 
 print('Battery: ${healthData.batteryLevel}%');
 print('Heart rate readings: ${healthData.heartRate.length}');
 print('Blood oxygen: ${healthData.bloodOxygen.length}');
+print('Blood pressure: ${healthData.bloodPressure.length}');
 print('Sleep records: ${healthData.sleep.length}');
 print('Sport records: ${healthData.sport.length}');
 ```
+
+> **About blood pressure timing.** Heart rate and SpO2 typically arrive within
+> a few seconds, but the K6 ring runs a single BP measurement cycle that
+> takes **~45–60 seconds** before it pushes the first reading. The default
+> 60 s `timeoutMs` is sized for this; shorter timeouts will return empty
+> `bloodPressure` lists. Make sure the ring is worn snugly and the wearer
+> stays still while the measurement runs.
 
 ### Disconnect
 
@@ -173,7 +185,8 @@ flutter run
 
 - **No devices found:** Enable Bluetooth, grant location permission, and ensure the ring is in pairing mode.
 - **Connection fails:** Confirm the ring is not connected to another device.
-- **Empty health data:** Connect first, wait a few seconds after pairing, then call `getHealthData()`. Sync can take up to ~25 seconds.
+- **Empty health data:** Connect first, wait a few seconds after pairing, then call `getHealthData()`. The full sync (including blood pressure) can take up to ~60 seconds — the default timeout.
+- **Empty `bloodPressure` list:** BP measurement on the K6 ring runs a single cycle of ~45–60 s before the first reading is pushed. Use the default `timeoutMs: 60000` (or higher), make sure the ring is worn snugly, and keep the wearer still for the entire measurement.
 - **iOS: “Device not connected”:** Use the address from `scanResults` (or MAC from QR) when calling `connect()`.
 
 ---

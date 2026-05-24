@@ -173,7 +173,48 @@ object LuckRingSdkHelper {
 
     fun isConnected(): Boolean = BluetoothHelper.getInstance().isConnectOk()
 
-    fun getHealthData(result: MethodChannel.Result) {
+    /**
+     * Demographic profile pushed to the ring before BP measurements.
+     * The K6 firmware uses these as inputs to its PPG-based BP calculation;
+     * without them many builds silently skip the BP cycle.
+     *
+     * NOTE: This currently only stores the values — wiring it through to
+     * the Android SDK's `sendUserInfo` call is a TODO. The iOS bridge does
+     * push these via `CE_SyncUserInfoCmd`.
+     */
+    @Volatile private var userSex: Int = 0
+    @Volatile private var userAge: Int = 30
+    @Volatile private var userHeightCm: Int = 170
+    @Volatile private var userWeightKg: Int = 70
+
+    fun setUserInfo(sex: Int?, age: Int?, heightCm: Int?, weightKg: Int?) {
+        sex?.let { userSex = it.coerceIn(0, 1) }
+        age?.let { userAge = it.coerceIn(1, 120) }
+        heightCm?.let { userHeightCm = it.coerceIn(80, 230) }
+        weightKg?.let { userWeightKg = it.coerceIn(20, 200) }
+        android.util.Log.i(
+            "LuckRing",
+            "setUserInfo sex=$userSex age=$userAge h=$userHeightCm w=$userWeightKg"
+        )
+        // TODO: when the Android SDK exposes a user-info command, push it
+        // here via BluetoothHelper.getInstance().getSendBlueData().
+    }
+
+    /**
+     * Trigger sync + real-time measurements (HR / SpO2 / BP) and wait up to
+     * [timeoutMs] before returning whatever was collected.
+     *
+     * Blood pressure runs a single measurement cycle on the ring that
+     * typically takes ~45-60 seconds before the first reading is pushed, so
+     * keep [timeoutMs] >= 60_000 to actually receive BP data.
+     */
+    fun getHealthData(timeoutMs: Long, result: MethodChannel.Result) {
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
+        // Cancel any previously-scheduled finish so we don't double-fire.
+        healthDataTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        healthDataTimeoutRunnable = null
+
         healthData.clear()
         getHealthDataResult = result
         registerHealthListeners()
@@ -183,62 +224,76 @@ object LuckRingSdkHelper {
         sendData.sendBloodOxygenDetection(CEBC.OPENSTATUS.OPEN)
         sendData.sendBloodPressureDetection(CEBC.OPENSTATUS.OPEN)
 
-        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val wait = timeoutMs.coerceAtLeast(5000L)
+        android.util.Log.i("LuckRing", "getHealthData: waiting ${wait}ms (BP needs ~45-60s)")
+
         healthDataTimeoutRunnable = Runnable {
-            // Stop detection to save battery
-            val sendData = BluetoothHelper.getInstance().getSendBlueData()
-            sendData.sendHeartRateSwitch(CEBC.OPENSTATUS.CLOSE)
-            sendData.sendBloodOxygenDetection(CEBC.OPENSTATUS.CLOSE)
-            sendData.sendBloodPressureDetection(CEBC.OPENSTATUS.CLOSE)
+            try {
+                val s = BluetoothHelper.getInstance().getSendBlueData()
+                s.sendHeartRateSwitch(CEBC.OPENSTATUS.CLOSE)
+                s.sendBloodOxygenDetection(CEBC.OPENSTATUS.CLOSE)
+                s.sendBloodPressureDetection(CEBC.OPENSTATUS.CLOSE)
+            } catch (e: Exception) {
+                android.util.Log.w("LuckRing", "stop detection failed", e)
+            }
             unregisterHealthListeners()
             val map = healthData.toMap()
+            android.util.Log.i(
+                "LuckRing",
+                "getHealthData done: hr=${(map["heartRate"] as? List<*>)?.size} " +
+                    "o2=${(map["bloodOxygen"] as? List<*>)?.size} " +
+                    "bp=${(map["bloodPressure"] as? List<*>)?.size}"
+            )
             getHealthDataResult?.success(map)
             getHealthDataResult = null
+            healthDataTimeoutRunnable = null
         }
-        handler.postDelayed(healthDataTimeoutRunnable!!, 25000)
+        handler.postDelayed(healthDataTimeoutRunnable!!, wait)
     }
 
     private fun registerHealthListeners() {
         val rcv = BluetoothHelper.getInstance().getRcvDataManager()
 
-        rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_SPORT_HEART_FOR_SHOW,
-            K6BleDataResult { list: ArrayList<K6_HeartStruct>? ->
-                list?.forEach { hr ->
-                    val value = hr.heartNums ?: 0
-                    healthData.addHeartRate(value, hr.time)
-                }
-                false
-            })
-
-        rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_DAILY_HEART,
-            K6BleDataResult { list: ArrayList<K6_HeartStruct>? ->
-                list?.forEach { hr ->
-                    val value = hr.heartNums ?: 0
-                    healthData.addHeartRate(value, hr.time)
-                }
-                false
-            })
-
-        rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_SPORT_HEART,
-            K6BleDataResult { list: ArrayList<K6_HeartStruct>? ->
-                list?.forEach { hr ->
-                    val value = hr.heartNums ?: 0
-                    healthData.addHeartRate(value, hr.time)
-                }
-                false
-            })
+        val heartCb = K6BleDataResult<ArrayList<K6_HeartStruct>> { list ->
+            list?.forEach { hr ->
+                val value = hr.heartNums
+                if (value > 0) healthData.addHeartRate(value, hr.time)
+            }
+            false
+        }
+        rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_SPORT_HEART_FOR_SHOW, heartCb)
+        rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_DAILY_HEART, heartCb)
+        rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_SPORT_HEART, heartCb)
 
         rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_DATA_TYPE_REAL_O2,
             K6BleDataResult { list: ArrayList<K6_DATA_TYPE_REAL_O2>? ->
                 list?.forEach { o2 ->
-                    healthData.addBloodOxygen(o2.value, o2.time.toLong())
+                    if (o2.value > 0) {
+                        healthData.addBloodOxygen(o2.value, o2.time.toLong())
+                    }
                 }
                 false
             })
 
         rcv.addBleDataResultListener(K6_Action.RCVD.RCVD_DATA_TYPE_REAL_BP,
             K6BleDataResult { list: ArrayList<K6_DATA_TYPE_REAL_BP>? ->
+                android.util.Log.d("LuckRing", "BP listener fired: size=${list?.size}")
                 list?.forEach { bp ->
+                    // The K6 SDK pushes a synthetic 0/0 reading with isEnd=true
+                    // while a measurement is still in progress; skip those so we
+                    // only surface completed readings.
+                    if (bp.isEnd()) {
+                        android.util.Log.d("LuckRing", "BP isEnd marker, skipping")
+                        return@forEach
+                    }
+                    if (bp.bp_sbp <= 0 && bp.bp_dbp <= 0) {
+                        android.util.Log.d("LuckRing", "BP 0/0 reading, skipping")
+                        return@forEach
+                    }
+                    android.util.Log.i(
+                        "LuckRing",
+                        "BP reading sbp=${bp.bp_sbp} dbp=${bp.bp_dbp} time=${bp.time}"
+                    )
                     healthData.addBloodPressure(bp.bp_sbp, bp.bp_dbp, bp.time.toLong())
                 }
                 false

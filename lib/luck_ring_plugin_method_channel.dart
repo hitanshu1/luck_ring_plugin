@@ -74,11 +74,24 @@ class MethodChannelLuckRingPlugin extends LuckRingPluginPlatform {
   }
 
   @override
-  Future<HealthData> getHealthData() async {
-    final map = await methodChannel.invokeMethod<Map<Object?, Object?>>('getHealthData');
+  Future<HealthData> getHealthData({int timeoutMs = 60000}) async {
+    final map = await methodChannel.invokeMethod<Map<Object?, Object?>>(
+      'getHealthData',
+      {'timeoutMs': timeoutMs},
+    );
     if (map == null) {
       return const HealthData(errorMessage: 'No data received');
     }
     return HealthData.fromMap(Map<String, dynamic>.from(map));
+  }
+
+  @override
+  Future<void> setUserInfo({int? sex, int? age, int? heightCm, int? weightKg}) async {
+    await methodChannel.invokeMethod('setUserInfo', {
+      if (sex != null) 'sex': sex,
+      if (age != null) 'age': age,
+      if (heightCm != null) 'heightCm': heightCm,
+      if (weightKg != null) 'weightKg': weightKg,
+    });
   }
 }
