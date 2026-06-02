@@ -35,8 +35,12 @@ class MockLuckRingPluginPlatform
   Future<bool> isConnected() => Future.value(false);
 
   @override
-  Future<HealthData> getHealthData() =>
+  Future<HealthData> getHealthData({int timeoutMs = 60000}) =>
       Future.value(const HealthData());
+
+  @override
+  Future<void> setUserInfo({int? sex, int? age, int? heightCm, int? weightKg}) =>
+      Future.value();
 }
 
 void main() {

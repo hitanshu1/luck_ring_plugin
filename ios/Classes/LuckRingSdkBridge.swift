@@ -34,19 +34,13 @@ class LuckRingSdkBridge: NSObject {
     private var healthBpInProgress: Bool = false
     /// Wall-clock deadline (`Date`) past which we stop extending the BP wait.
     private var healthBpAbsoluteDeadline: Date?
-    /// How long Phase 1 (HR + SpO2) runs before we stop those sensors and
-    /// switch the ring over to a BP-only measurement. Many K6 firmware
-    /// builds drive HR / SpO2 / BP off the *same* PPG channel and the BP
-    /// cycle is silently starved if HR streaming is concurrently running.
-    private let healthHrPhaseSecs: Double = 10.0
-    /// Work item that runs the Phase 1 → Phase 2 (BP-only) handoff.
-    private var healthBpPhaseWorkItem: DispatchWorkItem?
-    /// Periodic re-issue of `SyncBloodPressureCmd(status=1)` while we're
-    /// waiting for BP — some firmwares need the command nudged multiple
-    /// times before they actually start the cycle.
-    private var healthBpNudgeWorkItem: DispatchWorkItem?
-    /// Cadence at which we re-send `SyncBloodPressureCmd(status=1)`.
-    private let healthBpNudgeIntervalSecs: Double = 20.0
+    /// Periodically re-issues `CE_SyncBloodPressureCmd` and
+    /// `CE_RequestBloodPresureCmd` to nudge firmware variants that drop /
+    /// stall on the initial BP command. Cancelled when BP arrives or the
+    /// call finishes.
+    private var healthBpRetryWorkItem: DispatchWorkItem?
+    /// How often we re-send BP commands while waiting for a 0x12 packet.
+    private let healthBpRetryIntervalSecs: Double = 20.0
 
     /// Demographic profile pushed to the ring before a BP measurement. The
     /// K6 firmware uses these as inputs to its PPG-based BP calculation —
@@ -153,26 +147,23 @@ class LuckRingSdkBridge: NSObject {
         return cmd
     }
 
-    /// Two-phase sequential health collection — required because most K6
-    /// firmware builds (incl. `753.0.1.8.0`) drive HR / SpO2 / BP off the
-    /// *same* PPG channel and the BP measurement cycle is silently starved
-    /// if HR streaming is running concurrently.
+    /// Triggers all health measurements in parallel and resolves as soon as
+    /// the (slowest) blood pressure reading lands.
     ///
-    /// Phase 1 (`healthHrPhaseSecs` seconds): HR + SpO2 + battery + device
-    /// info. Quick — values are pushed back within a few seconds.
-    ///
-    /// Phase 2 (rest of the wait): stop HR + SpO2, then start BP *alone*.
-    /// We also periodically re-issue `SyncBloodPressureCmd(status=1)` every
-    /// `healthBpNudgeIntervalSecs` because some K6 builds need the command
-    /// nudged multiple times before they actually start the cycle.
-    ///
-    /// Completion:
-    /// - Resolves early (`bp-received`) on the first valid 0x12 BP packet
-    ///   plus a short grace window.
-    /// - Resolves at the soft deadline (`timeout`) once Phase 2 elapses.
-    /// - If 0x12 / `0x34` / `0x35` / `0xFA` markers show BP is still being
-    ///   measured at the soft deadline, the wait extends in 30s chunks up
-    ///   to `healthBpAbsoluteMaxSecs` (180s) total.
+    /// Flow:
+    ///   1. Fire HR, SpO2, and BP real-time commands in parallel. HR/SpO2
+    ///      typically return within a few seconds; BP runs a measurement
+    ///      cycle of ~45–60s before pushing its first valid reading.
+    ///   2. `parseBPData` calls `scheduleEarlyHealthFinish()` the moment the
+    ///      first valid (non-zero) BP reading is collected → grace window →
+    ///      `finishHealthCollection`.
+    ///   3. If the soft `timeoutMs` deadline fires before BP arrives, we
+    ///      check whether the BP measurement is still in progress on the
+    ///      ring (any 0x12 packet seen, even 0/0 in-progress markers). If
+    ///      so, we keep waiting in `healthBpExtendStepSecs` chunks up to
+    ///      `healthBpAbsoluteMaxSecs` total. Only then do we give up.
+    ///   4. If BP never even starts streaming (e.g. ring not worn / no skin
+    ///      contact), we bail at `timeoutMs` and return HR/SpO2.
     func getHealthData(timeoutMs: Int, completion: @escaping ([String: Any]) -> Void) {
         NSLog("[LuckRing] ===== getHealthData START timeoutMs=%d connected=%@ =====",
               timeoutMs, isConnected() ? "true" : "false")
@@ -189,10 +180,8 @@ class LuckRingSdkBridge: NSObject {
         healthTimeoutWorkItem = nil
         healthBpGraceWorkItem?.cancel()
         healthBpGraceWorkItem = nil
-        healthBpPhaseWorkItem?.cancel()
-        healthBpPhaseWorkItem = nil
-        healthBpNudgeWorkItem?.cancel()
-        healthBpNudgeWorkItem = nil
+        healthBpRetryWorkItem?.cancel()
+        healthBpRetryWorkItem = nil
 
         healthDataCompletion = completion
         // Reset per-call measurement lists so callers get fresh data
@@ -204,9 +193,10 @@ class LuckRingSdkBridge: NSObject {
         healthCollector["sport"] = [[String: Any]]()
         healthBpInProgress = false
 
+        NSLog("[LuckRing] bloodPresure: \(healthCollector["bloodPressure"])")
+
         let sdk = CEProductK6.shareInstance()!
 
-        // ---- Phase 1: HR + SpO2 + housekeeping ----
         // Open sensor data switch (device only uploads health data when this is on)
         let sensorCmd = CE_SensorCmd()
         sensorCmd.onoff = 1
@@ -228,8 +218,8 @@ class LuckRingSdkBridge: NSObject {
         sendCmdLogged(sdk, CE_RequestBloodPresureCmd(),
             label: "RequestBloodPresureCmd")
 
-        // Phase 1 sensor stream: HR + SpO2 only. BP is deliberately
-        // delayed until Phase 2 so the PPG channel isn't contested.
+        // Kick off HR + SpO2 + BP in parallel. The device streams readings
+        // back via `onReceiveData`; we don't block here.
         let heartO2 = CE_SyncHeartO2Cmd()
         heartO2.status = 1
         sendCmdLogged(sdk, heartO2, label: "SyncHeartO2Cmd(status=1)")
@@ -238,88 +228,71 @@ class LuckRingSdkBridge: NSObject {
         hr.status = 1
         sendCmdLogged(sdk, hr, label: "SyncHeartRateCmd(status=1)")
 
+        let bp = CE_SyncBloodPressureCmd()
+        bp.status = 1
+        sendCmdLogged(sdk, bp, label: "SyncBloodPressureCmd(status=1)")
+
         let waitSecs = max(Double(timeoutMs) / 1000.0, 5.0)
+        // Absolute deadline: caller's timeout, but never less than the BP
+        // hard cap. Once we cross this we give up even if BP is still
+        // streaming in-progress markers.
         let absoluteSecs = max(waitSecs, healthBpAbsoluteMaxSecs)
         healthBpAbsoluteDeadline = Date(timeIntervalSinceNow: absoluteSecs)
 
-        NSLog("[LuckRing] Phase 1 (HR+SpO2) running %.1fs, then handing "
-            + "off to Phase 2 (BP-only). soft wait=%.1fs, absolute cap=%.1fs",
-            healthHrPhaseSecs, waitSecs, absoluteSecs)
+        NSLog("[LuckRing] getHealthData: parallel measurement started; "
+            + "soft wait=%.1fs, absolute cap=%.1fs (BP can take ~45–60s, "
+            + "extends while in-progress)",
+            waitSecs, absoluteSecs)
 
-        // Schedule the Phase 2 handoff.
-        let phase2Delay = min(healthHrPhaseSecs, waitSecs * 0.2)
-        let phase2 = DispatchWorkItem { [weak self] in
-            self?.startBpPhase()
-        }
-        healthBpPhaseWorkItem = phase2
-        DispatchQueue.main.asyncAfter(deadline: .now() + phase2Delay,
-                                       execute: phase2)
-
-        // Soft timeout — fires after the *full* requested timeout. The
-        // handler then decides whether to finish or extend based on BP
-        // activity, exactly as before.
         scheduleHealthTimeout(after: waitSecs)
+        // Some K6 firmware variants (notably customer-specific builds like
+        // 753.0.x) appear to drop or stall on the initial BP command —
+        // they stream PPG raw data via 0xFA and BP-state markers via
+        // 0x34/0x35 but never finalize a 0x12 packet. Periodically
+        // re-issuing the BP sync + historical-BP request nudges these
+        // builds into producing a real reading.
+        scheduleBpRetry(after: healthBpRetryIntervalSecs)
     }
 
-    /// Phase 2: stop HR/SpO2, then start BP alone. Also primes the BP nudge
-    /// timer that re-sends `SyncBloodPressureCmd(status=1)` every
-    /// `healthBpNudgeIntervalSecs` until a 0x12 reading arrives or we
-    /// finish.
-    private func startBpPhase() {
-        guard healthDataCompletion != nil,
-              let sdk = CEProductK6.shareInstance() else { return }
-
-        NSLog("[LuckRing] ===== Phase 2: stopping HR/SpO2, starting BP alone =====")
-
-        // Stop HR + SpO2 so the PPG channel is free for BP.
-        let stopHrO2 = CE_SyncHeartO2Cmd()
-        stopHrO2.status = 0
-        sendCmdLogged(sdk, stopHrO2,
-            label: "SyncHeartO2Cmd(status=0) [phase2: stop for BP]")
-
-        let stopHr = CE_SyncHeartRateCmd()
-        stopHr.status = 0
-        sendCmdLogged(sdk, stopHr,
-            label: "SyncHeartRateCmd(status=0) [phase2: stop for BP]")
-
-        // Send BP after a short delay so the ring has time to release the
-        // PPG channel before we ask it to start a fresh cycle.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.issueBpCommand(reason: "phase2-initial")
-            self?.scheduleBpNudge()
+    /// Schedules / reschedules the BP nudge tick. Each tick re-sends
+    /// `CE_SyncBloodPressureCmd(status=1)` and `CE_RequestBloodPresureCmd`
+    /// while the call is still pending and no valid BP has arrived. The
+    /// tick reschedules itself until cancelled by `finishHealthCollection`
+    /// or until the absolute deadline passes.
+    private func scheduleBpRetry(after secs: Double) {
+        healthBpRetryWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.onBpRetryTick()
         }
+        healthBpRetryWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + secs, execute: work)
     }
 
-    /// Issues `SyncBloodPressureCmd(status=1)`. Called both from Phase 2
-    /// startup and from the periodic nudge timer.
-    private func issueBpCommand(reason: String) {
-        guard healthDataCompletion != nil,
-              let sdk = CEProductK6.shareInstance() else { return }
+    private func onBpRetryTick() {
+        guard healthDataCompletion != nil else { return }
+        let bpCount = (healthCollector["bloodPressure"] as? [[String: Any]])?.count ?? 0
+        if bpCount > 0 { return } // BP already arrived; nothing to nudge.
+
+        let absoluteDeadline = healthBpAbsoluteDeadline ?? Date()
+        guard Date() < absoluteDeadline else { return }
+
+        guard let sdk = CEProductK6.shareInstance() else { return }
+        NSLog("[LuckRing] BP retry tick — re-issuing BP commands")
+
+        // Re-issue the sync (start) command. Some firmwares only emit BP
+        // results in response to the *second* sync command after the
+        // measurement cycle has stabilised.
         let bp = CE_SyncBloodPressureCmd()
         bp.status = 1
-        sendCmdLogged(sdk, bp,
-            label: "SyncBloodPressureCmd(status=1) [\(reason)]")
-    }
+        sendCmdLogged(sdk, bp, label: "SyncBloodPressureCmd(status=1) [retry]")
 
-    /// Re-issues the BP command on a recurring schedule until BP arrives or
-    /// the session ends. Cleared by `finishHealthCollection`.
-    private func scheduleBpNudge() {
-        healthBpNudgeWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self, self.healthDataCompletion != nil else { return }
+        // Poll for any historical / cached BP the firmware may have
+        // produced silently.
+        sendCmdLogged(sdk, CE_RequestBloodPresureCmd(),
+            label: "RequestBloodPresureCmd [retry]")
 
-            let bpCount = (self.healthCollector["bloodPressure"] as? [[String: Any]])?.count ?? 0
-            if bpCount > 0 {
-                NSLog("[LuckRing] BP already collected, skipping nudge")
-                return
-            }
-            self.issueBpCommand(reason: "nudge")
-            self.scheduleBpNudge()
-        }
-        healthBpNudgeWorkItem = work
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + healthBpNudgeIntervalSecs,
-            execute: work)
+        // Reschedule until we have BP or hit the absolute cap.
+        scheduleBpRetry(after: healthBpRetryIntervalSecs)
     }
 
     /// Schedules / reschedules the soft timeout. Used both for the initial
@@ -370,17 +343,14 @@ class LuckRingSdkBridge: NSObject {
         finishHealthCollection(reason: reason)
     }
 
-    /// Called whenever a packet that indicates the ring is actively running
-    /// a BP / PPG cycle is seen — either a real 0x12 packet or one of the
-    /// undocumented BP-cycle markers (0x2A / 0x2F / 0x34 / 0x35 / 0xFA).
-    /// Tells the timeout handler that BP is still being measured so we
-    /// shouldn't give up yet.
+    /// Called from `parseBPData` whenever a 0x12 packet is seen — including
+    /// the device's in-progress 0/0 markers. Tells the timeout handler that
+    /// BP is still being measured so we shouldn't give up yet.
     func markBpInProgress() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.healthDataCompletion != nil else { return }
             if !self.healthBpInProgress {
-                NSLog("[LuckRing] BP measurement cycle active on ring "
-                    + "(first BP-related packet observed)")
+                NSLog("[LuckRing] BP measurement active on ring (first 0x12 packet)")
                 self.healthBpInProgress = true
             }
         }
@@ -421,10 +391,8 @@ class LuckRingSdkBridge: NSObject {
             self.healthTimeoutWorkItem = nil
             self.healthBpGraceWorkItem?.cancel()
             self.healthBpGraceWorkItem = nil
-            self.healthBpPhaseWorkItem?.cancel()
-            self.healthBpPhaseWorkItem = nil
-            self.healthBpNudgeWorkItem?.cancel()
-            self.healthBpNudgeWorkItem = nil
+            self.healthBpRetryWorkItem?.cancel()
+            self.healthBpRetryWorkItem = nil
             self.healthBpAbsoluteDeadline = nil
             self.healthBpInProgress = false
 
@@ -447,6 +415,29 @@ class LuckRingSdkBridge: NSObject {
             let o2Count = (self.healthCollector["bloodOxygen"] as? [[String: Any]])?.count ?? 0
             NSLog("[LuckRing] ===== getHealthData DONE reason=%@ hr=%d o2=%d bp=%d =====",
                   reason, hrCount, o2Count, bpCount)
+
+            // Surface a diagnostic message when BP didn't arrive so callers
+            // can tell the difference between "device not worn" / "firmware
+            // doesn't expose BP" / "BP in progress but timed out".
+            if bpCount == 0 {
+                switch reason {
+                case "bp-absolute-cap":
+                    self.healthCollector["errorMessage"] =
+                        "Blood pressure measurement did not complete after "
+                        + "\(Int(self.healthBpAbsoluteMaxSecs))s. The ring "
+                        + "streamed sensor data but never produced a final "
+                        + "BP reading — this firmware variant may not expose "
+                        + "BP through the standard SDK channel."
+                case "timeout-no-bp-activity":
+                    self.healthCollector["errorMessage"] =
+                        "Blood pressure measurement never started. Make sure "
+                        + "the ring is worn snugly and the wearer stays "
+                        + "still for the full measurement cycle."
+                default:
+                    break
+                }
+            }
+
             NSLog("[LuckRing] final collected payload=%@",
                   self.healthCollector as NSDictionary)
 
@@ -650,9 +641,64 @@ class LuckRingSdkBridge: NSObject {
             // Full payload already logged above; here we just mark BP as
             // actively measuring so the timeout extender stays armed.
             markBpInProgress()
+            // 0xFA is a batched container — `[count:hdr] [record × 8 bytes]`
+            // where each record is `[type:1] [value:1] [pad:1] [extra:1]
+            // [pad:4]`. Scan it for any 0x12-tagged sub-records in case the
+            // firmware ships BP inside this stream rather than as a
+            // standalone 0x12 packet.
+            if type == 0xFA, let body = d["UnknownBody"] as? NSData {
+                scanFAContainerForBP(body)
+            }
         default:
             // No further parsing — the full payload was already dumped above.
             break
+        }
+    }
+
+    /// Scans a `0xFA` container body for any sub-records tagged `0x12`
+    /// (REAL_BP). The container layout observed in field traces is a
+    /// 3-byte header (`hi lo cnt`) followed by `cnt` records of 8 bytes
+    /// each:
+    ///   `[type:1] [valueLow:1] [valueHigh:1] [extra:1] [pad:4]`
+    ///
+    /// Most records carry `type=0x07` (HR samples) but in principle the
+    /// firmware can interleave any data type here. If we find a `0x12`
+    /// record we treat the value as systolic and the extra byte as
+    /// diastolic-delta, mirroring the heuristic the SDK uses for inline
+    /// 0x12 packets.
+    private func scanFAContainerForBP(_ data: NSData) {
+        guard data.length >= 11 else { return }
+        let bytes = data.bytes.assumingMemoryBound(to: UInt8.self)
+        let count = Int(bytes[2])
+        let recordSize = 8
+        let headerSize = 3
+        // Sanity: header + records must fit in the packet.
+        guard headerSize + count * recordSize <= data.length else { return }
+
+        var found = 0
+        for i in 0..<count {
+            let off = headerSize + i * recordSize
+            let recType = bytes[off]
+            guard recType == 0x12 else { continue }
+            let sys = Int(bytes[off + 1])
+            let dia = Int(bytes[off + 3])
+            // Sanity-clamp to physiologic ranges before surfacing.
+            guard sys >= 60 && sys <= 220, dia >= 30 && dia <= 140 else {
+                NSLog("[LuckRing] 0xFA container: rejected 0x12 record "
+                    + "sys=%d dia=%d (out of range)", sys, dia)
+                continue
+            }
+            NSLog("[LuckRing] 0xFA container: found 0x12 record sys=%d dia=%d",
+                  sys, dia)
+            var list = healthCollector["bloodPressure"] as? [[String: Any]] ?? []
+            var entry: [String: Any] = ["systolic": sys, "diastolic": dia]
+            entry["timestamp"] = formatTimestamp(Int64(Date().timeIntervalSince1970))
+            list.append(entry)
+            healthCollector["bloodPressure"] = list
+            found += 1
+        }
+        if found > 0 {
+            scheduleEarlyHealthFinish()
         }
     }
 
@@ -714,17 +760,11 @@ class LuckRingSdkBridge: NSObject {
     }
 
     /// Thin wrapper around `sdk.sendCmd(toDevice:complete:)` that logs the
-    /// outbound command + the SDK's completion error (if any). Lets you
-    /// correlate each request with the device's reply, and surfaces silent
-    /// rejections — e.g. a BP command that the firmware discards — that
-    /// would otherwise be invisible.
+    /// outbound command. Lets you correlate each request with the
+    /// device's reply in the receive log.
     private func sendCmdLogged(_ sdk: CEProductK6, _ cmd: CE_Cmd, label: String) {
         NSLog("[LuckRing] >>>>> SEND %@ cmd=%@", label, cmd)
-        sdk.sendCmd(toDevice: cmd) { error in
-            if let err = error {
-                NSLog("[LuckRing]       SEND %@ ERROR: %@", label, err as NSError)
-            }
-        }
+        sdk.sendCmd(toDevice: cmd, complete: nil)
     }
 
     private func parseHeartData(_ data: [String: Any]) {
@@ -781,8 +821,24 @@ class LuckRingSdkBridge: NSObject {
         if items.isEmpty { items = arrayFromAny(data["items"]) }
 
         // Fallback: BP info inlined on the top-level dict (single reading).
-        let topSys = intFromAny(data["systolic"]) ?? intFromAny(data["highPressure"])
-        let topDia = intFromAny(data["diastolic"]) ?? intFromAny(data["lowPressure"])
+        let topSys = intFromAny(data["systolic"])
+            ?? intFromAny(data["highPressure"])
+            ?? intFromAny(data["high_pressure"])
+            ?? intFromAny(data["highpressure"])
+            ?? intFromAny(data["Systolic"])
+            ?? intFromAny(data["bp_sbp"])
+            ?? intFromAny(data["sbp"])
+            ?? intFromAny(data["bp_sys"])
+            ?? intFromAny(data["sys"])
+        let topDia = intFromAny(data["diastolic"])
+            ?? intFromAny(data["lowPressure"])
+            ?? intFromAny(data["low_pressure"])
+            ?? intFromAny(data["lowpressure"])
+            ?? intFromAny(data["Diastolic"])
+            ?? intFromAny(data["bp_dbp"])
+            ?? intFromAny(data["dbp"])
+            ?? intFromAny(data["bp_dia"])
+            ?? intFromAny(data["dia"])
         if items.isEmpty, topSys != nil || topDia != nil {
             var single: [String: Any] = [:]
             if let s = topSys { single["systolic"] = s }
@@ -797,15 +853,26 @@ class LuckRingSdkBridge: NSObject {
         for item in items {
             let sys = intFromAny(item["systolic"])
                 ?? intFromAny(item["highPressure"])
+                ?? intFromAny(item["high_pressure"])
+                ?? intFromAny(item["highpressure"])
+                ?? intFromAny(item["Systolic"])
                 ?? intFromAny(item["bp_sbp"])
-                ?? intFromAny(item["sbp"]) ?? 0
+                ?? intFromAny(item["sbp"])
+                ?? intFromAny(item["bp_sys"])
+                ?? intFromAny(item["sys"]) ?? 0
             let dia = intFromAny(item["diastolic"])
                 ?? intFromAny(item["lowPressure"])
+                ?? intFromAny(item["low_pressure"])
+                ?? intFromAny(item["lowpressure"])
+                ?? intFromAny(item["Diastolic"])
                 ?? intFromAny(item["bp_dbp"])
-                ?? intFromAny(item["dbp"]) ?? 0
+                ?? intFromAny(item["dbp"])
+                ?? intFromAny(item["bp_dia"])
+                ?? intFromAny(item["dia"]) ?? 0
             // Drop "end-of-stream" / "in-progress" markers — the device sends
-            // 0/0 readings while a measurement is still running.
-            if sys <= 0 && dia <= 0 { continue }
+            // 0/0 readings while a measurement is still running. Also ensure
+            // both values are positive to filter out incomplete or invalid packets.
+            if sys <= 0 || dia <= 0 { continue }
             var entry: [String: Any] = ["systolic": sys, "diastolic": dia]
             if let time = intFromAny(item["time"]) {
                 entry["timestamp"] = formatTimestamp(Int64(time))
