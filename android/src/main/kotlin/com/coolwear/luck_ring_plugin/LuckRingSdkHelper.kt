@@ -67,10 +67,15 @@ object LuckRingSdkHelper {
             !macId.isNullOrBlank() -> macId
             else -> btAddress ?: ""
         }
+        // rssi comes straight off MyBleDevice, so it needs no join against the
+        // scan record (whose address is masked on Android 12+). 0 means the SDK
+        // had no reading yet; report null rather than a bogus 0 dBm.
+        val rssi = dev.rssi.takeIf { it != 0 }
         return mapOf(
             "name" to (dev.name ?: "Unknown"),
             "address" to address,
-            "deviceId" to (macId ?: btAddress ?: "")
+            "deviceId" to (macId ?: btAddress ?: ""),
+            "rssi" to rssi
         )
     }
 
@@ -257,7 +262,10 @@ object LuckRingSdkHelper {
                         s.starTime.toLong(),
                         s.walkSteps,
                         s.distance,
-                        s.calories,
+                        // Energy arrives in milli-kcal (a 563-step walk reports
+                        // 17536, i.e. 17.5 kcal); normalise to whole kcal to
+                        // match the iOS side.
+                        Math.round(s.calories / 1000.0).toInt(),
                         s.duration
                     )
                 }

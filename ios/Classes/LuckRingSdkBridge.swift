@@ -89,6 +89,13 @@ class LuckRingSdkBridge: NSObject {
         }
         healthDataCompletion = completion
 
+        // Start each sync from an empty collector. The parse callbacks append
+        // to these arrays, and the ring re-sends its stored history on every
+        // sync — so without this reset the payload accumulates a duplicate copy
+        // of every record on each call, and grows without bound for as long as
+        // the connection lives. Android already does this in getHealthData().
+        healthCollector = [:]
+
         let sdk = CEProductK6.shareInstance()!
 
         // Open sensor data switch (device only uploads health data when this is on)
@@ -163,7 +170,7 @@ class LuckRingSdkBridge: NSObject {
 
     private func emitScanResults() {
         var seen = Set<String>()
-        var list = [[String: String]]()
+        var list = [[String: Any]]()
         for sp in discoveredPeripherals.values {
             let mac = sp.macAddress() ?? ""
             let address = mac.isEmpty
@@ -174,13 +181,19 @@ class LuckRingSdkBridge: NSObject {
 
             let devId = sp.deviceID() ?? ""
 
-            list.append([
+            var entry: [String: Any] = [
                 "name": peripheralName(sp),
                 "address": address,
                 "deviceId": devId.isEmpty
                     ? (sp.peripheral?.identifier.uuidString ?? "")
                     : devId
-            ])
+            ]
+            // Omit the key entirely when absent so it decodes as null on the
+            // Dart side rather than NSNull tripping the `as num?` cast.
+            if let rssi = sp.rssi?.intValue, rssi != 0 {
+                entry["rssi"] = rssi
+            }
+            list.append(entry)
         }
         scanCallback?(list)
     }
@@ -358,10 +371,15 @@ class LuckRingSdkBridge: NSObject {
             ?? data["data"] as? [[String: Any]]
         if let infos = infos {
             for info in infos {
+                // The ring reports energy in milli-kcal: a 563-step, 6-minute
+                // walk comes back as 17536, i.e. 17.5 kcal. Normalise to whole
+                // kcal here so callers get a usable unit.
+                let rawCalories = info["walkCalories"] as? Int
+                    ?? info["calories"] as? Int ?? 0
                 var entry: [String: Any] = [
                     "steps": info["walkSteps"] as? Int ?? info["steps"] as? Int ?? 0,
                     "distance": info["walkDistance"] as? Int ?? info["distance"] as? Int ?? 0,
-                    "calories": info["walkCalories"] as? Int ?? info["calories"] as? Int ?? 0,
+                    "calories": Int((Double(rawCalories) / 1000.0).rounded()),
                     "durationSeconds": info["walkDuration"] as? Int ?? info["duration"] as? Int ?? 0
                 ]
                 let time = info["startSecs"] as? Int ?? info["time"] as? Int
