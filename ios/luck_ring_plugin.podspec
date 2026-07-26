@@ -13,11 +13,12 @@ A new Flutter plugin project.
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'Your Company' => 'email@example.com' }
   s.source           = { :path => '.' }
-  s.source_files = 'Classes/**/*'
+  s.source_files = 'luck_ring_plugin/Sources/luck_ring_plugin/**/*.swift'
+  s.resource_bundles = {'luck_ring_plugin_privacy' => ['luck_ring_plugin/Sources/luck_ring_plugin/PrivacyInfo.xcprivacy']}
   s.dependency 'Flutter'
   s.platform = :ios, '13.0'
   s.ios.framework  = 'CoreBluetooth'
-  s.vendored_frameworks = 'Frameworks/BluetoothLibrary.framework'
+  s.vendored_frameworks = 'luck_ring_plugin/Frameworks/BluetoothLibrary.xcframework'
 
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386' }
   s.swift_version = '5.0'

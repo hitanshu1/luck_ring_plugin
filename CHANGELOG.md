@@ -26,3 +26,13 @@
   milli-kcal (a 563-step, 6-minute walk reports `17536`), which surfaced as
   absurd calorie figures.
 
+## 0.0.5
+
+* **iOS:** added Swift Package Manager support, clearing the
+  "The following plugins do not support Swift Package Manager for ios" warning.
+  The iOS sources moved to `ios/luck_ring_plugin/Sources/luck_ring_plugin/` and
+  the vendored `BluetoothLibrary.framework` is now an XCFramework at
+  `ios/luck_ring_plugin/Frameworks/BluetoothLibrary.xcframework`, since SwiftPM
+  only accepts XCFrameworks as binary targets. The podspec was updated to the
+  same paths, so CocoaPods projects keep working unchanged. No API changes.
+
