@@ -123,9 +123,9 @@ class _RingConnectPageState extends State<RingConnectPage> {
     } catch (e) {
       if (mounted) {
         setState(() => _status = 'Scan failed: $e');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Scan failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Scan failed: $e')));
       }
     } finally {
       if (mounted) setState(() => _scanning = false);
@@ -190,17 +190,19 @@ class _RingConnectPageState extends State<RingConnectPage> {
     try {
       final data = await _plugin.getHealthData();
       print('data: ${jsonEncode(data.toMap())}');
-      if (mounted) setState(() {
-        _healthData = data;
-        _loadingHealth = false;
-      });
+      if (mounted)
+        setState(() {
+          _healthData = data;
+          _loadingHealth = false;
+        });
     } catch (e) {
-      if (mounted) setState(() {
-        _loadingHealth = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
-      );
+      if (mounted)
+        setState(() {
+          _loadingHealth = false;
+        });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }
 
@@ -225,12 +227,16 @@ class _RingConnectPageState extends State<RingConnectPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (_status != null) Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(_status!, style: Theme.of(context).textTheme.bodyLarge),
+              if (_status != null)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      _status!,
+                      style: Theme.of(context).textTheme.bodyLarge,
+                    ),
+                  ),
                 ),
-              ),
               const SizedBox(height: 16),
               Row(
                 children: [
@@ -258,18 +264,23 @@ class _RingConnectPageState extends State<RingConnectPage> {
               ),
               const SizedBox(height: 16),
               if (_devices.isNotEmpty) ...[
-                const Text('Discovered devices:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text(
+                  'Discovered devices:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 8),
-                ..._devices.map((d) => Card(
-                  child: ListTile(
-                    title: Text(d.name.isEmpty ? 'Unknown' : d.name),
-                    subtitle: Text(d.address),
-                    trailing: FilledButton(
-                      onPressed: () => _connect(d),
-                      child: const Text('Connect'),
+                ..._devices.map(
+                  (d) => Card(
+                    child: ListTile(
+                      title: Text(d.name.isEmpty ? 'Unknown' : d.name),
+                      subtitle: Text(d.address),
+                      trailing: FilledButton(
+                        onPressed: () => _connect(d),
+                        child: const Text('Connect'),
+                      ),
                     ),
                   ),
-                )),
+                ),
                 const SizedBox(height: 24),
               ],
               if (_connected) ...[
@@ -280,15 +291,23 @@ class _RingConnectPageState extends State<RingConnectPage> {
                       ? const SizedBox(
                           width: 20,
                           height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
                         )
                       : const Icon(Icons.favorite),
-                  label: Text(_loadingHealth ? 'Syncing...' : 'Get Health Data'),
+                  label: Text(
+                    _loadingHealth ? 'Syncing...' : 'Get Health Data',
+                  ),
                 ),
               ],
               if (_healthData != null) ...[
                 const SizedBox(height: 24),
-                const Text('Health Data', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                const Text(
+                  'Health Data',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 8),
                 _HealthDataView(data: _healthData!),
               ],
@@ -314,7 +333,10 @@ class _HealthDataView extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (data.errorMessage != null)
-              Text('Error: ${data.errorMessage}', style: TextStyle(color: Colors.red[700])),
+              Text(
+                'Error: ${data.errorMessage}',
+                style: TextStyle(color: Colors.red[700]),
+              ),
             if (data.batteryLevel != null)
               Text('Battery: ${data.batteryLevel}%'),
             if (data.deviceInfo != null)

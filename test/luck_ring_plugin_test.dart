@@ -22,8 +22,7 @@ class MockLuckRingPluginPlatform
   Future<void> stopScan() => Future.value();
 
   @override
-  Stream<List<ScanDevice>> get scanResults =>
-      Stream.value([]);
+  Stream<List<ScanDevice>> get scanResults => Stream.value([]);
 
   @override
   Future<bool> connect(String address) => Future.value(true);
@@ -35,12 +34,12 @@ class MockLuckRingPluginPlatform
   Future<bool> isConnected() => Future.value(false);
 
   @override
-  Future<HealthData> getHealthData() =>
-      Future.value(const HealthData());
+  Future<HealthData> getHealthData() => Future.value(const HealthData());
 }
 
 void main() {
-  final LuckRingPluginPlatform initialPlatform = LuckRingPluginPlatform.instance;
+  final LuckRingPluginPlatform initialPlatform =
+      LuckRingPluginPlatform.instance;
 
   test('$MethodChannelLuckRingPlugin is the default instance', () {
     expect(initialPlatform, isInstanceOf<MethodChannelLuckRingPlugin>());

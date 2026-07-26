@@ -32,7 +32,10 @@ class ScanDevice {
   }
 
   /// Converts this instance into a JSON-compatible map.
-  Map<String, dynamic> toMap() =>
-      {'name': name, 'address': address, 'deviceId': deviceId, 'rssi': rssi};
+  Map<String, dynamic> toMap() => {
+    'name': name,
+    'address': address,
+    'deviceId': deviceId,
+    'rssi': rssi,
+  };
 }
-

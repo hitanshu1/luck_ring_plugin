@@ -39,29 +39,52 @@ class HealthData {
   /// Creates a [HealthData] instance from a JSON-compatible map.
   factory HealthData.fromMap(Map<String, dynamic> map) {
     return HealthData(
-      heartRate: (map['heartRate'] as List<dynamic>?)
-              ?.map((e) => HeartRateReading.fromMap(Map<String, dynamic>.from(e as Map)))
+      heartRate:
+          (map['heartRate'] as List<dynamic>?)
+              ?.map(
+                (e) => HeartRateReading.fromMap(
+                  Map<String, dynamic>.from(e as Map),
+                ),
+              )
               .toList() ??
           [],
-      bloodOxygen: (map['bloodOxygen'] as List<dynamic>?)
-              ?.map((e) => BloodOxygenReading.fromMap(Map<String, dynamic>.from(e as Map)))
+      bloodOxygen:
+          (map['bloodOxygen'] as List<dynamic>?)
+              ?.map(
+                (e) => BloodOxygenReading.fromMap(
+                  Map<String, dynamic>.from(e as Map),
+                ),
+              )
               .toList() ??
           [],
-      bloodPressure: (map['bloodPressure'] as List<dynamic>?)
-              ?.map((e) => BloodPressureReading.fromMap(Map<String, dynamic>.from(e as Map)))
+      bloodPressure:
+          (map['bloodPressure'] as List<dynamic>?)
+              ?.map(
+                (e) => BloodPressureReading.fromMap(
+                  Map<String, dynamic>.from(e as Map),
+                ),
+              )
               .toList() ??
           [],
-      sleep: (map['sleep'] as List<dynamic>?)
-              ?.map((e) => SleepRecord.fromMap(Map<String, dynamic>.from(e as Map)))
+      sleep:
+          (map['sleep'] as List<dynamic>?)
+              ?.map(
+                (e) => SleepRecord.fromMap(Map<String, dynamic>.from(e as Map)),
+              )
               .toList() ??
           [],
-      sport: (map['sport'] as List<dynamic>?)
-              ?.map((e) => SportRecord.fromMap(Map<String, dynamic>.from(e as Map)))
+      sport:
+          (map['sport'] as List<dynamic>?)
+              ?.map(
+                (e) => SportRecord.fromMap(Map<String, dynamic>.from(e as Map)),
+              )
               .toList() ??
           [],
       batteryLevel: map['batteryLevel'] as int?,
       deviceInfo: map['deviceInfo'] != null
-          ? DeviceInfo.fromMap(Map<String, dynamic>.from(map['deviceInfo'] as Map))
+          ? DeviceInfo.fromMap(
+              Map<String, dynamic>.from(map['deviceInfo'] as Map),
+            )
           : null,
       errorMessage: map['errorMessage'] as String?,
     );
@@ -103,7 +126,10 @@ class HeartRateReading {
     );
   }
 
-  Map<String, dynamic> toMap() => {'value': value, 'timestamp': timestamp?.toIso8601String()};
+  Map<String, dynamic> toMap() => {
+    'value': value,
+    'timestamp': timestamp?.toIso8601String(),
+  };
 }
 
 /// A single blood oxygen (SpO2) measurement.
@@ -127,7 +153,10 @@ class BloodOxygenReading {
     );
   }
 
-  Map<String, dynamic> toMap() => {'value': value, 'timestamp': timestamp?.toIso8601String()};
+  Map<String, dynamic> toMap() => {
+    'value': value,
+    'timestamp': timestamp?.toIso8601String(),
+  };
 }
 
 /// A single blood pressure measurement.
@@ -159,8 +188,11 @@ class BloodPressureReading {
     );
   }
 
-  Map<String, dynamic> toMap() =>
-      {'systolic': systolic, 'diastolic': diastolic, 'timestamp': timestamp?.toIso8601String()};
+  Map<String, dynamic> toMap() => {
+    'systolic': systolic,
+    'diastolic': diastolic,
+    'timestamp': timestamp?.toIso8601String(),
+  };
 }
 
 /// A record of a sleep session.
@@ -195,10 +227,10 @@ class SleepRecord {
   }
 
   Map<String, dynamic> toMap() => {
-        'startTime': startTime?.toIso8601String(),
-        'stage': stage,
-        'durationMinutes': durationMinutes,
-      };
+    'startTime': startTime?.toIso8601String(),
+    'stage': stage,
+    'durationMinutes': durationMinutes,
+  };
 }
 
 /// A record of physical activity or sport.
@@ -241,12 +273,12 @@ class SportRecord {
   }
 
   Map<String, dynamic> toMap() => {
-        'startTime': startTime?.toIso8601String(),
-        'steps': steps,
-        'distance': distance,
-        'calories': calories,
-        'durationSeconds': durationSeconds,
-      };
+    'startTime': startTime?.toIso8601String(),
+    'steps': steps,
+    'distance': distance,
+    'calories': calories,
+    'durationSeconds': durationSeconds,
+  };
 }
 
 /// Information about the connected device.
@@ -261,11 +293,7 @@ class DeviceInfo {
   final String? deviceId;
 
   /// Creates a new [DeviceInfo] instance.
-  const DeviceInfo({
-    this.macAddress,
-    this.version,
-    this.deviceId,
-  });
+  const DeviceInfo({this.macAddress, this.version, this.deviceId});
 
   /// Creates a [DeviceInfo] instance from a JSON-compatible map.
   factory DeviceInfo.fromMap(Map<String, dynamic> map) {
@@ -276,6 +304,9 @@ class DeviceInfo {
     );
   }
 
-  Map<String, dynamic> toMap() =>
-      {'macAddress': macAddress, 'version': version, 'deviceId': deviceId};
+  Map<String, dynamic> toMap() => {
+    'macAddress': macAddress,
+    'version': version,
+    'deviceId': deviceId,
+  };
 }

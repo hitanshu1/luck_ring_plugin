@@ -58,7 +58,9 @@ class MethodChannelLuckRingPlugin extends LuckRingPluginPlatform {
 
   @override
   Future<bool> connect(String address) async {
-    final result = await methodChannel.invokeMethod<bool>('connect', {'address': address});
+    final result = await methodChannel.invokeMethod<bool>('connect', {
+      'address': address,
+    });
     return result == true;
   }
 
@@ -75,7 +77,9 @@ class MethodChannelLuckRingPlugin extends LuckRingPluginPlatform {
 
   @override
   Future<HealthData> getHealthData() async {
-    final map = await methodChannel.invokeMethod<Map<Object?, Object?>>('getHealthData');
+    final map = await methodChannel.invokeMethod<Map<Object?, Object?>>(
+      'getHealthData',
+    );
     if (map == null) {
       return const HealthData(errorMessage: 'No data received');
     }
